@@ -1,0 +1,154 @@
+/**
+ * LogicTrade Sync — Admin Styles
+ */
+
+/* ---------------------------------------------------------------
+   Cards grid (Dashboard)
+   --------------------------------------------------------------- */
+.logictrade-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 16px;
+    margin: 20px 0;
+}
+
+.logictrade-card {
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    padding: 16px 20px;
+}
+
+.logictrade-card h3 {
+    margin: 0 0 8px;
+    font-size: 13px;
+    color: #646970;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.logictrade-card .logictrade-card-value {
+    font-size: 28px;
+    font-weight: 600;
+    margin: 0;
+    color: #1d2327;
+}
+
+.logictrade-card--error .logictrade-card-value {
+    color: #d63638;
+}
+
+/* ---------------------------------------------------------------
+   Sections
+   --------------------------------------------------------------- */
+.logictrade-section {
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    padding: 16px 20px;
+    margin: 20px 0;
+}
+
+.logictrade-section h2 {
+    margin-top: 0;
+}
+
+/* ---------------------------------------------------------------
+   Status badges
+   --------------------------------------------------------------- */
+.logictrade-status {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.6;
+}
+
+.logictrade-status--info {
+    background: #e5f5fa;
+    color: #0a4b78;
+}
+
+.logictrade-status--success {
+    background: #ecf7ed;
+    color: #1a5e20;
+}
+
+.logictrade-status--warning {
+    background: #fef8e7;
+    color: #7d5a00;
+}
+
+.logictrade-status--error {
+    background: #fce4e4;
+    color: #8b0000;
+}
+
+/* ---------------------------------------------------------------
+   Log filters
+   --------------------------------------------------------------- */
+.logictrade-log-filters {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 16px 0;
+    flex-wrap: wrap;
+}
+
+.logictrade-log-filters label {
+    font-weight: 600;
+}
+
+.logictrade-log-filters select {
+    min-width: 140px;
+}
+
+/* ---------------------------------------------------------------
+   Category mapping
+   --------------------------------------------------------------- */
+.logictrade-select {
+    min-width: 250px;
+}
+
+/* ---------------------------------------------------------------
+   Tables
+   --------------------------------------------------------------- */
+.logictrade-log-table td,
+.logictrade-log-table th {
+    vertical-align: middle;
+}
+
+/* ---------------------------------------------------------------
+   Sync progress
+   --------------------------------------------------------------- */
+#logictrade-sync-progress {
+    display: flex;
+    align-items: center;
+    padding: 10px 0;
+}
+
+#logictrade-sync-result .notice {
+    margin: 0;
+}
+
+/* ---------------------------------------------------------------
+   Export meta box
+   --------------------------------------------------------------- */
+.logictrade-export-result .notice {
+    margin: 5px 0 0;
+    padding: 6px 10px;
+}
+
+/* ---------------------------------------------------------------
+   General
+   --------------------------------------------------------------- */
+.logictrade-wrap .button-hero {
+    font-size: 15px;
+}
+
+.logictrade-wrap hr {
+    border: none;
+    border-top: 1px solid #c3c4c7;
+    margin: 24px 0;
+}
