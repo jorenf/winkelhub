@@ -13,12 +13,15 @@ final class SettingsPage
     {
         // Handle form submission.
         if (isset($_POST['logictrade_settings_nonce']) && wp_verify_nonce($_POST['logictrade_settings_nonce'], 'logictrade_save_settings')) {
-            $apiKey = sanitize_text_field($_POST['logictrade_api_key'] ?? '');
+            $apiKey   = sanitize_text_field($_POST['logictrade_api_key'] ?? '');
+            $salesMan = sanitize_text_field($_POST['logictrade_salesman_username'] ?? '');
             update_option('logictrade_api_key', $apiKey);
+            update_option('logictrade_salesman_username', $salesMan);
             echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__('Settings saved.', 'logictrade-sync') . '</p></div>';
         }
 
-        $currentKey = get_option('logictrade_api_key', '');
+        $currentKey      = get_option('logictrade_api_key', '');
+        $currentSalesMan = get_option('logictrade_salesman_username', '');
         ?>
         <div class="wrap logictrade-wrap">
             <h1><?php esc_html_e('LogicTrade Sync — Settings', 'logictrade-sync'); ?></h1>
@@ -40,6 +43,22 @@ final class SettingsPage
                                    autocomplete="off">
                             <p class="description">
                                 <?php esc_html_e('Enter the API key from your LogicTrade account. This is required for all sync operations.', 'logictrade-sync'); ?>
+                            </p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">
+                            <label for="logictrade_salesman_username"><?php esc_html_e('SalesMan Username', 'logictrade-sync'); ?></label>
+                        </th>
+                        <td>
+                            <input type="text"
+                                   name="logictrade_salesman_username"
+                                   id="logictrade_salesman_username"
+                                   value="<?php echo esc_attr($currentSalesMan); ?>"
+                                   class="regular-text"
+                                   autocomplete="off">
+                            <p class="description">
+                                <?php esc_html_e('The LogicTrade username of the salesperson assigned to webshop orders. Required for order export.', 'logictrade-sync'); ?>
                             </p>
                         </td>
                     </tr>

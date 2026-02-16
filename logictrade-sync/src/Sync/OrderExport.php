@@ -71,6 +71,13 @@ final class OrderExport
             ];
         }
 
+        if (empty(get_option('logictrade_salesman_username', ''))) {
+            return [
+                'success' => false,
+                'message' => __('SalesMan Username is not configured. Go to LogicTrade Sync → Settings.', 'logictrade-sync'),
+            ];
+        }
+
         // Prevent duplicate export.
         if ($this->orderMappingRepo->isExported($orderId)) {
             return [
@@ -141,16 +148,21 @@ final class OrderExport
 
     /**
      * Build the order payload for POST /orders.
+     *
+     * The API requires structured customer, delivery, and lines objects,
+     * plus a salesManUserName field.
      */
     private function buildPayload(\WC_Order $order): array
     {
-        $billingAddress  = $order->get_address('billing');
-        $shippingAddress = $order->get_address('shipping');
+        $billing  = $order->get_address('billing');
+        $shipping = $order->get_address('shipping');
 
-        // Prefer shipping address, fall back to billing.
-        $address = !empty($shippingAddress['address_1']) ? $shippingAddress : $billingAddress;
+        // Prefer shipping address for delivery, fall back to billing.
+        $deliveryAddr = !empty($shipping['address_1']) ? $shipping : $billing;
 
+        // Build order lines.
         $lines = [];
+        $lineNumber = 1;
         foreach ($order->get_items() as $item) {
             /** @var \WC_Order_Item_Product $item */
             $product     = $item->get_product();
@@ -164,24 +176,36 @@ final class OrderExport
             }
 
             $lines[] = [
-                'productCode' => $productCode,
-                'quantity'    => $item->get_quantity(),
-                'price'       => (float) $item->get_total() / max($item->get_quantity(), 1),
+                'lineNumber'  => $lineNumber,
+                'code'        => $productCode,
                 'description' => $item->get_name(),
+                'quantity'    => $item->get_quantity(),
+                'partPrice'   => (float) $item->get_total() / max($item->get_quantity(), 1),
             ];
+            $lineNumber++;
         }
 
         $payload = [
-            'reference'      => (string) $order->get_id(),
-            'webshopNumber'  => $order->get_order_number(),
-            'customerName'   => $order->get_formatted_billing_full_name(),
-            'email'          => $order->get_billing_email(),
-            'phone'          => $order->get_billing_phone(),
-            'address'        => trim(($address['address_1'] ?? '') . ' ' . ($address['address_2'] ?? '')),
-            'city'           => $address['city'] ?? '',
-            'postalCode'     => $address['postcode'] ?? '',
-            'country'        => $address['country'] ?? '',
-            'orderLines'     => $lines,
+            'reference'        => (string) $order->get_id(),
+            'webshopNumber'    => $order->get_order_number(),
+            'salesManUserName' => get_option('logictrade_salesman_username', ''),
+            'customer'         => [
+                'name'       => $order->get_formatted_billing_full_name(),
+                'email'      => $order->get_billing_email(),
+                'phone'      => $order->get_billing_phone(),
+                'address'    => trim(($billing['address_1'] ?? '') . ' ' . ($billing['address_2'] ?? '')),
+                'city'       => $billing['city'] ?? '',
+                'postalCode' => $billing['postcode'] ?? '',
+                'country'    => $billing['country'] ?? '',
+            ],
+            'delivery'         => [
+                'name'       => trim(($deliveryAddr['first_name'] ?? '') . ' ' . ($deliveryAddr['last_name'] ?? '')),
+                'address'    => trim(($deliveryAddr['address_1'] ?? '') . ' ' . ($deliveryAddr['address_2'] ?? '')),
+                'city'       => $deliveryAddr['city'] ?? '',
+                'postalCode' => $deliveryAddr['postcode'] ?? '',
+                'country'    => $deliveryAddr['country'] ?? '',
+            ],
+            'lines'            => $lines,
         ];
 
         // The API expects comment as an object with intern/extern keys, not a plain string.
