@@ -76,11 +76,11 @@ final class ProductSync
         $errors  = 0;
 
         try {
-            // 1. Fetch all prices indexed by product ID.
-            $priceMap = $this->fetchAllPrices();
+            // 1. Fetch all prices indexed by product ID (non-fatal if endpoint unavailable).
+            $priceMap = $this->fetchAllPricesGracefully();
 
-            // 2. Fetch all stock indexed by product ID.
-            $stockMap = $this->fetchAllStock();
+            // 2. Fetch all stock indexed by product ID (non-fatal if endpoint unavailable).
+            $stockMap = $this->fetchAllStockGracefully();
 
             // 3. Paginate through products and upsert.
             $page       = 1;
@@ -88,17 +88,10 @@ final class ProductSync
 
             do {
                 $response   = $this->client->getProducts($page, self::BATCH_SIZE);
-                $products   = $response['data'] ?? $response['results'] ?? $response;
                 $totalPages = $response['totalPages'] ?? $totalPages;
+                $products   = $this->extractItems($response);
 
-                // Handle case where products are nested.
-                if (isset($response['data']) && is_array($response['data'])) {
-                    $products = $response['data'];
-                } elseif (isset($response['results']) && is_array($response['results'])) {
-                    $products = $response['results'];
-                }
-
-                if (!is_array($products)) {
+                if (empty($products)) {
                     break;
                 }
 
@@ -188,27 +181,70 @@ final class ProductSync
 
     /**
      * Fetch all price records, indexed by product ID.
+     * Returns empty array if the endpoint is unavailable.
      *
      * @return array<int|string, array>
      */
-    private function fetchAllPrices(): array
+    private function fetchAllPricesGracefully(): array
+    {
+        try {
+            return $this->fetchPaginatedMap(function (int $page, int $size) {
+                return $this->client->getPrices($page, $size);
+            });
+        } catch (\Throwable $e) {
+            $this->logger->warning(
+                'Prices endpoint unavailable — prices from product data will be used. ' . $e->getMessage(),
+                'product_sync'
+            );
+            return [];
+        }
+    }
+
+    /**
+     * Fetch all stock records, indexed by product ID.
+     * Returns empty array if the endpoint is unavailable.
+     *
+     * @return array<int|string, array>
+     */
+    private function fetchAllStockGracefully(): array
+    {
+        try {
+            return $this->fetchPaginatedMap(function (int $page, int $size) {
+                return $this->client->getStock($page, $size);
+            });
+        } catch (\Throwable $e) {
+            $this->logger->warning(
+                'Stock endpoint unavailable — stock from product data will be used. ' . $e->getMessage(),
+                'product_sync'
+            );
+            return [];
+        }
+    }
+
+    /**
+     * Generic paginated fetcher that indexes results by product ID.
+     *
+     * @param callable(int, int): array $fetcher
+     * @return array<int|string, array>
+     */
+    private function fetchPaginatedMap(callable $fetcher): array
     {
         $map        = [];
         $page       = 1;
         $totalPages = 1;
 
         do {
-            $response   = $this->client->getPrices($page, self::BATCH_SIZE);
-            $items      = $response['data'] ?? $response['results'] ?? $response;
-            $totalPages = $response['totalPages'] ?? $totalPages;
+            $response = $fetcher($page, self::BATCH_SIZE);
 
-            if (isset($response['data']) && is_array($response['data'])) {
-                $items = $response['data'];
-            } elseif (isset($response['results']) && is_array($response['results'])) {
-                $items = $response['results'];
+            // Empty response means endpoint returned no data.
+            if (empty($response)) {
+                break;
             }
 
-            if (!is_array($items)) {
+            $items      = $this->extractItems($response);
+            $totalPages = $response['totalPages'] ?? $totalPages;
+
+            if (empty($items)) {
                 break;
             }
 
@@ -227,43 +263,23 @@ final class ProductSync
     }
 
     /**
-     * Fetch all stock records, indexed by product ID.
+     * Extract the item array from various API response shapes.
      *
-     * @return array<int|string, array>
+     * @return array<int, array>
      */
-    private function fetchAllStock(): array
+    private function extractItems(array $response): array
     {
-        $map        = [];
-        $page       = 1;
-        $totalPages = 1;
-
-        do {
-            $response   = $this->client->getStock($page, self::BATCH_SIZE);
-            $items      = $response['data'] ?? $response['results'] ?? $response;
-            $totalPages = $response['totalPages'] ?? $totalPages;
-
-            if (isset($response['data']) && is_array($response['data'])) {
-                $items = $response['data'];
-            } elseif (isset($response['results']) && is_array($response['results'])) {
-                $items = $response['results'];
-            }
-
-            if (!is_array($items)) {
-                break;
-            }
-
-            foreach ($items as $item) {
-                $pid = $item['productId'] ?? $item['id'] ?? null;
-                if ($pid !== null) {
-                    $map[$pid] = $item;
-                }
-            }
-
-            unset($items);
-            $page++;
-        } while ($page <= $totalPages);
-
-        return $map;
+        if (isset($response['data']) && is_array($response['data'])) {
+            return $response['data'];
+        }
+        if (isset($response['results']) && is_array($response['results'])) {
+            return $response['results'];
+        }
+        // If the response itself looks like a flat list of items.
+        if (isset($response[0]) && is_array($response[0])) {
+            return $response;
+        }
+        return [];
     }
 
     // ------------------------------------------------------------------

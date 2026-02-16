@@ -258,7 +258,7 @@ final class Plugin
         }
 
         try {
-            $response = $this->client->getProducts(1, 1);
+            $response = $this->client->getProducts(1, 10);
             wp_send_json_success([
                 'message' => __('Connection successful! LogicTrade API is reachable.', 'logictrade-sync'),
             ]);

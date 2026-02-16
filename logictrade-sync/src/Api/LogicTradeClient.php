@@ -13,14 +13,24 @@ use LogicTradeSync\Utils\Logger;
  */
 final class LogicTradeClient
 {
-    private const BASE_URL = 'https://api.logictrade.cloud/rest/v1';
-    private const TIMEOUT  = 30; // seconds
+    private const BASE_URL      = 'https://api.logictrade.cloud/rest/v1';
+    private const TIMEOUT       = 30; // seconds
+    private const MIN_PAGE_SIZE = 10;
+    private const MAX_PAGE_SIZE = 100;
 
     private Logger $logger;
 
     public function __construct(Logger $logger)
     {
         $this->logger = $logger;
+    }
+
+    /**
+     * Clamp pageSize to the API-allowed range (10–100).
+     */
+    private function clampPageSize(int $pageSize): int
+    {
+        return max(self::MIN_PAGE_SIZE, min(self::MAX_PAGE_SIZE, $pageSize));
     }
 
     // ------------------------------------------------------------------
@@ -34,30 +44,66 @@ final class LogicTradeClient
     {
         return $this->get('/products', [
             'pageNumber' => $page,
-            'pageSize'   => $pageSize,
+            'pageSize'   => $this->clampPageSize($pageSize),
         ]);
     }
 
     /**
-     * @return array{data: array, totalResults: int, totalPages: int, pageNumber: int}
+     * Fetch product prices. Tries /products/prices first, then /prices.
+     *
+     * @return array API response (may be empty array if endpoint is unavailable).
      */
     public function getPrices(int $page = 1, int $pageSize = 100): array
     {
-        return $this->get('/products/prices', [
+        $params = [
             'pageNumber' => $page,
-            'pageSize'   => $pageSize,
-        ]);
+            'pageSize'   => $this->clampPageSize($pageSize),
+        ];
+
+        // Try the documented endpoint paths in order.
+        $paths = ['/products/prices', '/prices'];
+
+        foreach ($paths as $path) {
+            try {
+                return $this->get($path, $params);
+            } catch (RequestException $e) {
+                $this->logger->warning(
+                    sprintf('Prices endpoint %s failed (HTTP %d), trying next.', $path, $e->getHttpStatus()),
+                    'api'
+                );
+            }
+        }
+
+        // All paths failed — return empty result so sync continues.
+        return [];
     }
 
     /**
-     * @return array{data: array, totalResults: int, totalPages: int, pageNumber: int}
+     * Fetch product stock. Tries /products/stock first, then /stock.
+     *
+     * @return array API response (may be empty array if endpoint is unavailable).
      */
     public function getStock(int $page = 1, int $pageSize = 100): array
     {
-        return $this->get('/products/stock', [
+        $params = [
             'pageNumber' => $page,
-            'pageSize'   => $pageSize,
-        ]);
+            'pageSize'   => $this->clampPageSize($pageSize),
+        ];
+
+        $paths = ['/products/stock', '/stock'];
+
+        foreach ($paths as $path) {
+            try {
+                return $this->get($path, $params);
+            } catch (RequestException $e) {
+                $this->logger->warning(
+                    sprintf('Stock endpoint %s failed (HTTP %d), trying next.', $path, $e->getHttpStatus()),
+                    'api'
+                );
+            }
+        }
+
+        return [];
     }
 
     // ------------------------------------------------------------------
@@ -65,11 +111,26 @@ final class LogicTradeClient
     // ------------------------------------------------------------------
 
     /**
+     * Fetch product groups. Tries /groups first, then /products/groups, then /product-groups.
+     *
      * @return array
      */
     public function getCategories(): array
     {
-        return $this->get('/product-groups');
+        $paths = ['/groups', '/products/groups', '/product-groups'];
+
+        foreach ($paths as $path) {
+            try {
+                return $this->get($path);
+            } catch (RequestException $e) {
+                $this->logger->warning(
+                    sprintf('Groups endpoint %s failed (HTTP %d), trying next.', $path, $e->getHttpStatus()),
+                    'api'
+                );
+            }
+        }
+
+        throw new RequestException('No working product groups endpoint found. Tried: ' . implode(', ', $paths));
     }
 
     // ------------------------------------------------------------------
@@ -150,7 +211,7 @@ final class LogicTradeClient
     {
         if (is_wp_error($response)) {
             $message = sprintf('[%s %s] WP HTTP Error: %s', $method, $endpoint, $response->get_error_message());
-            $this->logger->error($message);
+            $this->logger->error($message, 'api');
             throw new RequestException($message);
         }
 
@@ -159,14 +220,14 @@ final class LogicTradeClient
 
         if ($code < 200 || $code >= 300) {
             $message = sprintf('[%s %s] HTTP %d: %s', $method, $endpoint, $code, $body);
-            $this->logger->error($message);
+            $this->logger->error($message, 'api');
             throw new RequestException($message, $code, $body);
         }
 
         $decoded = json_decode($body, true);
         if (!is_array($decoded)) {
             $message = sprintf('[%s %s] Invalid JSON response.', $method, $endpoint);
-            $this->logger->error($message);
+            $this->logger->error($message, 'api');
             throw new RequestException($message, $code, $body);
         }
 
