@@ -171,7 +171,7 @@ final class OrderExport
             ];
         }
 
-        return [
+        $payload = [
             'reference'      => (string) $order->get_id(),
             'webshopNumber'  => $order->get_order_number(),
             'customerName'   => $order->get_formatted_billing_full_name(),
@@ -181,8 +181,18 @@ final class OrderExport
             'city'           => $address['city'] ?? '',
             'postalCode'     => $address['postcode'] ?? '',
             'country'        => $address['country'] ?? '',
-            'comment'        => $order->get_customer_note(),
             'orderLines'     => $lines,
         ];
+
+        // The API expects comment as an object with intern/extern keys, not a plain string.
+        $customerNote = $order->get_customer_note();
+        if (!empty($customerNote)) {
+            $payload['comment'] = [
+                'intern' => '',
+                'extern' => $customerNote,
+            ];
+        }
+
+        return $payload;
     }
 }
