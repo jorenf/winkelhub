@@ -199,6 +199,7 @@ final class OrderExport
                 'country'    => $billing['country'] ?? '',
             ],
             'delivery'         => [
+                'code'       => get_option('logictrade_delivery_type_code', ''),
                 'name'       => trim(($deliveryAddr['first_name'] ?? '') . ' ' . ($deliveryAddr['last_name'] ?? '')),
                 'address'    => trim(($deliveryAddr['address_1'] ?? '') . ' ' . ($deliveryAddr['address_2'] ?? '')),
                 'city'       => $deliveryAddr['city'] ?? '',

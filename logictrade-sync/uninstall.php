@@ -10,6 +10,7 @@ defined('WP_UNINSTALL_PLUGIN') || exit;
 // Remove options.
 delete_option('logictrade_api_key');
 delete_option('logictrade_salesman_username');
+delete_option('logictrade_delivery_type_code');
 delete_option('logictrade_sync_version');
 
 // Drop custom tables.
