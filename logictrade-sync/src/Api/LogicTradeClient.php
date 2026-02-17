@@ -134,6 +134,44 @@ final class LogicTradeClient
     }
 
     // ------------------------------------------------------------------
+    // Customers
+    // ------------------------------------------------------------------
+
+    /**
+     * Search customers. Supports filtering by email, name, or number.
+     *
+     * @return array Paginated response.
+     */
+    public function getCustomers(int $page = 1, int $pageSize = 10, array $filters = []): array
+    {
+        $params = array_merge([
+            'pageNumber' => $page,
+            'pageSize'   => $this->clampPageSize($pageSize),
+        ], $filters);
+
+        return $this->get('/customers', $params);
+    }
+
+    /**
+     * Retrieve a single customer by LogicTrade ID.
+     */
+    public function getCustomer(int $customerId): array
+    {
+        return $this->get('/customers/' . $customerId);
+    }
+
+    /**
+     * Create a new customer in LogicTrade.
+     *
+     * @param array $data Customer fields.
+     * @return array Created customer response.
+     */
+    public function createCustomer(array $data): array
+    {
+        return $this->post('/customers', $data);
+    }
+
+    // ------------------------------------------------------------------
     // Orders
     // ------------------------------------------------------------------
 

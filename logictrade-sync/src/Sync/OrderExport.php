@@ -12,6 +12,9 @@ use LogicTradeSync\Utils\Logger;
 
 /**
  * Exports WooCommerce orders to LogicTrade via POST /orders.
+ *
+ * Resolves (or creates) a LogicTrade customer before exporting the order,
+ * since the API requires a customer reference.
  */
 final class OrderExport
 {
@@ -34,12 +37,9 @@ final class OrderExport
 
     /**
      * Hook callback: auto-export when order status transitions to processing.
-     *
-     * @param int $orderId WooCommerce order ID.
      */
     public function onOrderProcessing(int $orderId): void
     {
-        // Only export if not already exported.
         if ($this->orderMappingRepo->isExported($orderId)) {
             return;
         }
@@ -49,7 +49,6 @@ final class OrderExport
             return;
         }
 
-        // Ensure payment is complete (paid).
         if (!$order->is_paid()) {
             return;
         }
@@ -65,50 +64,37 @@ final class OrderExport
     public function exportOrder(int $orderId): array
     {
         if (!$this->client->isConfigured()) {
-            return [
-                'success' => false,
-                'message' => __('API key not configured.', 'logictrade-sync'),
-            ];
+            return ['success' => false, 'message' => __('API key not configured.', 'logictrade-sync')];
         }
 
         if (empty(get_option('logictrade_salesman_username', ''))) {
-            return [
-                'success' => false,
-                'message' => __('SalesMan Username is not configured. Go to LogicTrade Sync → Settings.', 'logictrade-sync'),
-            ];
+            return ['success' => false, 'message' => __('SalesMan Username is not configured. Go to LogicTrade Sync → Settings.', 'logictrade-sync')];
         }
 
-        // Prevent duplicate export.
         if ($this->orderMappingRepo->isExported($orderId)) {
-            return [
-                'success' => false,
-                'message' => __('Order has already been exported.', 'logictrade-sync'),
-            ];
+            return ['success' => false, 'message' => __('Order has already been exported.', 'logictrade-sync')];
         }
 
         $order = wc_get_order($orderId);
         if (!$order) {
-            return [
-                'success' => false,
-                'message' => __('Order not found.', 'logictrade-sync'),
-            ];
+            return ['success' => false, 'message' => __('Order not found.', 'logictrade-sync')];
         }
 
-        $payload = $this->buildPayload($order);
-
         try {
+            // 1. Resolve or create customer in LogicTrade.
+            $customerNumber = $this->resolveCustomer($order);
+
+            // 2. Build and send order payload.
+            $payload  = $this->buildPayload($order, $customerNumber);
             $response = $this->client->createOrder($payload);
 
-            $ltOrderId = (string) ($response['id'] ?? $response['orderId'] ?? $response['number'] ?? '');
+            $ltOrderId = (string) ($response['id'] ?? $response['number'] ?? '');
 
-            // Save meta on the order.
             $order->update_meta_data('_logictrade_order_id', $ltOrderId);
             $order->update_meta_data('_logictrade_order_exported', 'yes');
             $order->save();
 
-            // Record in mapping table.
             $this->orderMappingRepo->recordSuccess($orderId, $ltOrderId);
-
             $this->logger->success(
                 sprintf('Order #%d exported to LogicTrade (LT ID: %s).', $orderId, $ltOrderId),
                 'order_export'
@@ -119,49 +105,194 @@ final class OrderExport
                 'message'             => sprintf(__('Order exported successfully. LogicTrade ID: %s', 'logictrade-sync'), $ltOrderId),
                 'logictrade_order_id' => $ltOrderId,
             ];
-        } catch (RequestException $e) {
-            $errorMsg = $e->getMessage();
-            $this->orderMappingRepo->recordFailure($orderId, $errorMsg);
-            $this->logger->error(
-                sprintf('Order #%d export failed: %s', $orderId, $errorMsg),
-                'order_export'
-            );
-
-            return [
-                'success' => false,
-                'message' => $errorMsg,
-            ];
         } catch (\Throwable $e) {
             $errorMsg = $e->getMessage();
             $this->orderMappingRepo->recordFailure($orderId, $errorMsg);
-            $this->logger->error(
-                sprintf('Order #%d export unexpected error: %s', $orderId, $errorMsg),
-                'order_export'
-            );
+            $this->logger->error(sprintf('Order #%d export failed: %s', $orderId, $errorMsg), 'order_export');
 
-            return [
-                'success' => false,
-                'message' => $errorMsg,
-            ];
+            return ['success' => false, 'message' => $errorMsg];
         }
     }
+
+    // ------------------------------------------------------------------
+    // Customer resolution
+    // ------------------------------------------------------------------
+
+    /**
+     * Find an existing LogicTrade customer by email, or create a new one.
+     *
+     * @return string The LogicTrade customer number.
+     * @throws RequestException
+     */
+    private function resolveCustomer(\WC_Order $order): string
+    {
+        $email = $order->get_billing_email();
+
+        // Check if we already resolved this customer before (stored on user meta or order meta).
+        $cachedNumber = $order->get_meta('_logictrade_customer_number');
+        if (!empty($cachedNumber)) {
+            return $cachedNumber;
+        }
+
+        // Try to find by email.
+        if (!empty($email)) {
+            $found = $this->findCustomerByEmail($email);
+            if ($found) {
+                $order->update_meta_data('_logictrade_customer_number', $found);
+                $order->save();
+                return $found;
+            }
+        }
+
+        // Try to find by name.
+        $firstName = $order->get_billing_first_name();
+        $lastName  = $order->get_billing_last_name();
+        if (!empty($lastName)) {
+            $found = $this->findCustomerByName($firstName, $lastName);
+            if ($found) {
+                $order->update_meta_data('_logictrade_customer_number', $found);
+                $order->save();
+                return $found;
+            }
+        }
+
+        // Not found — create a new customer.
+        $customerNumber = $this->createCustomerFromOrder($order);
+
+        $order->update_meta_data('_logictrade_customer_number', $customerNumber);
+        $order->save();
+
+        $this->logger->info(
+            sprintf('Created new LogicTrade customer %s for %s.', $customerNumber, $email ?: "$firstName $lastName"),
+            'order_export'
+        );
+
+        return $customerNumber;
+    }
+
+    /**
+     * Search LogicTrade customers by email.
+     *
+     * @return string|null Customer number if found, null otherwise.
+     */
+    private function findCustomerByEmail(string $email): ?string
+    {
+        try {
+            $response  = $this->client->getCustomers(1, 10, ['email' => $email]);
+            $customers = $response['data'] ?? $response['results'] ?? $response;
+
+            if (isset($response['data']) && is_array($response['data'])) {
+                $customers = $response['data'];
+            } elseif (isset($response['results']) && is_array($response['results'])) {
+                $customers = $response['results'];
+            }
+
+            if (!empty($customers) && is_array($customers)) {
+                foreach ($customers as $c) {
+                    if (isset($c['number']) && !empty($c['number'])) {
+                        return (string) $c['number'];
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            $this->logger->warning('Customer search by email failed: ' . $e->getMessage(), 'order_export');
+        }
+
+        return null;
+    }
+
+    /**
+     * Search LogicTrade customers by name.
+     *
+     * @return string|null Customer number if found, null otherwise.
+     */
+    private function findCustomerByName(string $firstName, string $lastName): ?string
+    {
+        try {
+            $response  = $this->client->getCustomers(1, 10, ['name' => $lastName]);
+            $customers = $response['data'] ?? $response['results'] ?? $response;
+
+            if (isset($response['data']) && is_array($response['data'])) {
+                $customers = $response['data'];
+            } elseif (isset($response['results']) && is_array($response['results'])) {
+                $customers = $response['results'];
+            }
+
+            if (!empty($customers) && is_array($customers)) {
+                foreach ($customers as $c) {
+                    $cFirst = $c['firstName'] ?? '';
+                    $cLast  = $c['lastName'] ?? '';
+
+                    if (
+                        strcasecmp($cLast, $lastName) === 0 &&
+                        (empty($firstName) || strcasecmp($cFirst, $firstName) === 0)
+                    ) {
+                        if (isset($c['number']) && !empty($c['number'])) {
+                            return (string) $c['number'];
+                        }
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            $this->logger->warning('Customer search by name failed: ' . $e->getMessage(), 'order_export');
+        }
+
+        return null;
+    }
+
+    /**
+     * Create a new customer in LogicTrade from WooCommerce order data.
+     *
+     * @return string The customer number of the newly created customer.
+     * @throws RequestException
+     */
+    private function createCustomerFromOrder(\WC_Order $order): string
+    {
+        $billing = $order->get_address('billing');
+
+        $data = [
+            'firstName'    => $order->get_billing_first_name(),
+            'lastName'     => $order->get_billing_last_name(),
+            'companyName'  => $order->get_billing_company(),
+            'email'        => $order->get_billing_email(),
+            'phoneNumber'  => $order->get_billing_phone(),
+            'address'      => [
+                'street'      => trim(($billing['address_1'] ?? '') . ' ' . ($billing['address_2'] ?? '')),
+                'houseNumber' => '',
+                'zipCode'     => $billing['postcode'] ?? '',
+                'city'        => $billing['city'] ?? '',
+                'country'     => $billing['country'] ?? '',
+            ],
+        ];
+
+        $response = $this->client->createCustomer($data);
+
+        $number = $response['number'] ?? $response['id'] ?? '';
+        if (empty($number)) {
+            throw new RequestException('Customer created but no number returned.');
+        }
+
+        return (string) $number;
+    }
+
+    // ------------------------------------------------------------------
+    // Order payload
+    // ------------------------------------------------------------------
 
     /**
      * Build the order payload for POST /orders.
      *
-     * The API requires structured customer, delivery, and lines objects,
-     * plus a salesManUserName field.
+     * The API expects customer as a reference (number), delivery with a code,
+     * and structured line objects.
      */
-    private function buildPayload(\WC_Order $order): array
+    private function buildPayload(\WC_Order $order, string $customerNumber): array
     {
-        $billing  = $order->get_address('billing');
-        $shipping = $order->get_address('shipping');
-
-        // Prefer shipping address for delivery, fall back to billing.
+        $shipping     = $order->get_address('shipping');
+        $billing      = $order->get_address('billing');
         $deliveryAddr = !empty($shipping['address_1']) ? $shipping : $billing;
 
         // Build order lines.
-        $lines = [];
+        $lines      = [];
         $lineNumber = 1;
         foreach ($order->get_items() as $item) {
             /** @var \WC_Order_Item_Product $item */
@@ -190,26 +321,22 @@ final class OrderExport
             'webshopNumber'    => $order->get_order_number(),
             'salesManUserName' => get_option('logictrade_salesman_username', ''),
             'customer'         => [
-                'name'       => $order->get_formatted_billing_full_name(),
-                'email'      => $order->get_billing_email(),
-                'phone'      => $order->get_billing_phone(),
-                'address'    => trim(($billing['address_1'] ?? '') . ' ' . ($billing['address_2'] ?? '')),
-                'city'       => $billing['city'] ?? '',
-                'postalCode' => $billing['postcode'] ?? '',
-                'country'    => $billing['country'] ?? '',
+                'number' => $customerNumber,
             ],
             'delivery'         => [
-                'code'       => get_option('logictrade_delivery_type_code', ''),
-                'name'       => trim(($deliveryAddr['first_name'] ?? '') . ' ' . ($deliveryAddr['last_name'] ?? '')),
-                'address'    => trim(($deliveryAddr['address_1'] ?? '') . ' ' . ($deliveryAddr['address_2'] ?? '')),
-                'city'       => $deliveryAddr['city'] ?? '',
-                'postalCode' => $deliveryAddr['postcode'] ?? '',
-                'country'    => $deliveryAddr['country'] ?? '',
+                'code'    => get_option('logictrade_delivery_type_code', ''),
+                'address' => [
+                    'street'      => trim(($deliveryAddr['address_1'] ?? '') . ' ' . ($deliveryAddr['address_2'] ?? '')),
+                    'houseNumber' => '',
+                    'zipCode'     => $deliveryAddr['postcode'] ?? '',
+                    'city'        => $deliveryAddr['city'] ?? '',
+                    'country'     => $deliveryAddr['country'] ?? '',
+                ],
             ],
             'lines'            => $lines,
         ];
 
-        // The API expects comment as an object with intern/extern keys, not a plain string.
+        // Comment as object with intern/extern keys.
         $customerNote = $order->get_customer_note();
         if (!empty($customerNote)) {
             $payload['comment'] = [
